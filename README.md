@@ -1,236 +1,337 @@
-# Universal Reminder & Notification Service (URNS)
+# URNS – Universal Reminder & Notification Service
 
-## Overview
-The **Universal Reminder & Notification Service (URNS)** is a standalone microservice that schedules and delivers reminders via webhooks.
+URNS is a standalone microservice that lets any **client application** schedule reminders and receive them later through **webhook callbacks**.
 
-It supports:
-- **One-time reminders**
-- **Recurring reminders** (cron syntax)
-- **Webhook delivery callbacks**
-- **Retry logic with exponential backoff**
-- **API-key authentication**
-- **In-memory storage** (Sprint 1)
+## 1. Overview
 
-This service is meant to be consumed by other microservices (Weather App, Calendar Service, User Service, etc.).
+**Workflow:**
 
----
+1. A client app calls **POST `/reminders`** and includes:
+   - The reminder type (`time` or `cron`)
+   - When it fires (ISO time or cron syntax)
+   - A webhook URL to POST back to
+   - Optional payload data
 
-## 🚀 Running the URNS Microservice
+2. URNS schedules the reminder.
 
-### 1. Activate your virtual environment
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-```
+3. When the scheduled moment arrives, URNS sends a **POST** to the provided webhook URL.
 
-### 2. Install dependencies
-If a `requirements.txt` exists inside `urns/`:
-```bash
-pip install -r requirements.txt
-```
+4. Clients can:
+   - **List reminders** → GET `/reminders`
+   - **Get a reminder** → GET `/reminders/{id}`
+   - **Delete one** → DELETE `/reminders/{id}`
+   - **Delete all** → DELETE `/reminders`
 
-If your repo has a top-level `requirements.txt`:
-```bash
-pip install -r ../requirements.txt
-```
-
-### 3. Start the URNS server
-From inside the `urns/` folder:
-```bash
-uvicorn app:app --reload --port 8081
-```
-
-URNS will now be running at:  
-👉 http://127.0.0.1:8081
+**Important:**  
+URNS stores reminders **in memory only** (no database). Restarting the process clears all reminders. This is acceptable for the class project.
 
 ---
 
-## 🧩 API Endpoints
+## 2. Running the Microservice
 
-### Health Check
+### Install Requirements
+
+```bash
+pip install fastapi uvicorn httpx apscheduler pydantic python-dateutil
+```
+
+### Start URNS
+
+```bash
+uvicorn urns.app:app --reload --port 8081
+```
+
+URNS will run at:
+
+```text
+http://127.0.0.1:8081
+```
+
+---
+
+## 3. Authentication
+
+All endpoints (except `/healthz`) require:
+
 ```http
-GET /healthz
-→ {"status": "ok"}
+X-App-Key: dev-key
+```
+
+Without it, URNS returns:
+
+```json
+{ "detail": "invalid api key" }
 ```
 
 ---
 
-### Create a One-Time Reminder
-```http
-POST /reminders
-Headers:
-  X-App-Key: dev-key
-Body:
+## 4. Data Model – Communication Contract
+
+### 4.1. `ReminderIn` (Request Body)
+
+```json
 {
-  "app_id": "weather-app",
-  "type": "time",
-  "when": "2025-11-12T07:00:00Z",
-  "notify": { "webhook": "http://127.0.0.1:8080/hooks/reminder" },
-  "payload": { "title": "Hello", "msg": "This is your reminder." }
+  "app_id": "string (required)",
+  "type": "time | cron",
+  "when": "ISO8601 datetime or null",
+  "cron": "cron syntax or null",
+  "notify": {
+    "webhook": "string URL"
+  },
+  "payload": {
+    "...": "optional JSON data"
+  },
+  "idempotency_key": "optional string"
+}
+```
+
+Rules:
+
+- `type == "time"` → must include `"when"`
+- `type == "cron"` → must include `"cron"`
+- `notify.webhook` → where URNS will POST the reminder
+
+---
+
+### 4.2. `ReminderOut` (Response Body for POST)
+
+```json
+{
+  "reminder_id": "string",
+  "status": "scheduled"
 }
 ```
 
 ---
 
-### Create a Recurring Reminder (cron)
+### 4.3. `ReminderRecord` (Returned by GET Endpoints)
+
+```json
+{
+  "reminder_id": "string",
+  "app_id": "string",
+  "type": "time | cron",
+  "when": "string or null",
+  "cron": "string or null",
+  "notify": { "webhook": "URL string" },
+  "payload": { "...": "JSON" },
+  "status": "scheduled | delivered | cancelled | failed",
+  "attempts": 0,
+  "last_error": null,
+  "next_run_time": "ISO8601 string or null"
+}
+```
+
+---
+
+## 5. Endpoints
+
+### 5.1. Health Check
+
+```http
+GET /healthz
+```
+
+Response:
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+### 5.2. Create a Reminder
+
 ```http
 POST /reminders
-Headers:
-  X-App-Key: dev-key
-Body:
+X-App-Key: dev-key
+Content-Type: application/json
+```
+
+Example request:
+
+```json
 {
   "app_id": "weather-app",
   "type": "cron",
   "cron": "0 7 * * *",
+  "when": null,
   "notify": { "webhook": "http://127.0.0.1:8080/hooks/reminder" },
-  "payload": { "title": "Daily Check", "msg": "Look at the weather today!" }
-}
-```
-
----
-
-### List Reminders
-```http
-GET /reminders
-Headers: X-App-Key: dev-key
-```
-
-### Get One Reminder
-```http
-GET /reminders/{reminder_id}
-Headers: X-App-Key: dev-key
-```
-
----
-
-### Delete One Reminder
-```http
-DELETE /reminders/{reminder_id}
-Headers: X-App-Key: dev-key
-```
-
-### Delete ALL Reminders
-```http
-DELETE /reminders
-Headers: X-App-Key: dev-key
-```
-
----
-
-## 🔔 Webhook Delivery Format
-
-When URNS sends a reminder, it POSTs this JSON to your webhook:
-
-```json
-{
-  "reminder_id": "d1a92df3-1c89-4872-a94f-b3f41c3eb266",
-  "app_id": "weather-app",
-  "fired_at": "2025-11-12T07:00:00Z",
   "payload": {
     "title": "Daily Forecast",
-    "msg": "Check the weather!"
+    "msg": "Check today's weather!"
   }
 }
 ```
 
-With headers:
-```text
-Content-Type: application/json
-X-App-Id: weather-app
-X-App-Key: dev-key
-X-URNS-Delivery: 1
-```
+Example response:
 
----
-
-## ⚙️ Internal Behavior
-
-### Storage
-- Uses an in-memory dictionary (`REMINDERS`).
-- Does not persist once the server stops (Sprint 1 requirement).
-
-### Scheduler
-URNS uses **APScheduler**:
-- `DateTrigger` for one-time reminders
-- `CronTrigger` for recurring reminders
-
-### Delivery Retries
-If a webhook returns an error:
-- URNS retries **3 times**
-- Backoff schedule: **2 seconds → 8 seconds → 30 seconds**
-- One-time reminders eventually become `failed`
-- Cron reminders wait until the next scheduled tick
-
----
-
-## 🧠 Quality Attributes
-
-### Testability
-- Pure async logic  
-- Easy to test using pytest + HTTPX test client  
-
-### Availability
-- Retry logic  
-- Clear status fields (`scheduled`, `delivered`, `cancelled`, `failed`)  
-
-### Maintainability
-- Clean separation of:
-  - validation
-  - scheduling
-  - delivery
-  - API routes  
-
-### Security
-- API key authentication via `X-App-Key`
-- Each webhook can require its own auth
-
----
-
-# 🤝 Team Integration Notes
-
----
-
-## 1. Universal Users Service
-- Stores users in SQLite  
-- Communicates with ZMQ  
-
-How it works with URNS:
-- A user’s reminders can be grouped using `app_id`  
-- URNS does **not** store user records  
-- The Users Service can call URNS when a user configures a reminder  
-
-Example:
 ```json
 {
-  "app_id": "user:123",
-  "type": "time",
-  "when": "...",
-  "notify": { "webhook": "http://127.0.0.1:5000/user/123/inbox" }
+  "reminder_id": "8049e7a9-284d-44aa-a067-390ed2b5f145",
+  "status": "scheduled"
 }
 ```
 
 ---
 
-## 2. Calendar Microservice
-- Accepts events  
-- Generates timestamps  
-- Uses ZMQ messaging  
+### 5.3. List Reminders
 
-How it integrates:
-1. Calendar microservice outputs a timestamp  
-2. Weather or User app passes that timestamp into URNS  
-3. URNS schedules the actual reminder
-
-Example:
 ```http
-POST /reminders
+GET /reminders?app_id=weather-app
+X-App-Key: dev-key
+```
+
+Returns a list of `ReminderRecord`.
+
+---
+
+### 5.4. Get One Reminder
+
+```http
+GET /reminders/{id}
+X-App-Key: dev-key
+```
+
+Returns the `ReminderRecord`.
+
+---
+
+### 5.5. Delete a Reminder
+
+```http
+DELETE /reminders/{id}
+X-App-Key: dev-key
+```
+
+Response:
+
+```json
 {
-  "app_id": "calendar",
-  "type": "time",
-  "when": "<timestamp from calendar service>",
-  "notify": { "webhook": "http://127.0.0.1:8080/hooks/calendar" }
+  "status": "cancelled",
+  "reminder_id": "{id}"
 }
 ```
 
-URNS becomes the **central scheduling engine** for all microservices.
+---
 
+### 5.6. Delete All Reminders
+
+```http
+DELETE /reminders
+X-App-Key: dev-key
+```
+
+Response:
+
+```json
+{ "status": "cleared" }
+```
+
+---
+
+## 6. Webhook Callback Contract (How Clients Receive Data)
+
+When the reminder fires, URNS calls:
+
+```http
+POST {your_webhook_url}
+Content-Type: application/json
+X-App-Id: {your app_id}
+X-URNS-Delivery: 1
+X-App-Key: dev-key
+```
+
+Payload sent to your app:
+
+```json
+{
+  "reminder_id": "string",
+  "app_id": "string",
+  "fired_at": "ISO8601 timestamp",
+  "payload": {
+    "title": "Daily Forecast",
+    "msg": "Check today's weather!"
+  }
+}
+```
+
+Your app should respond:
+
+```json
+{ "ok": true }
+```
+
+with `HTTP 200`.
+
+---
+
+## 7. Example Test Program
+
+```python
+import httpx
+
+URNS = "http://127.0.0.1:8081"
+API_KEY = "dev-key"
+
+def test_schedule():
+    body = {
+        "app_id": "demo-client",
+        "type": "time",
+        "when": "2025-11-02T07:00:00Z",
+        "notify": { "webhook": "http://127.0.0.1:8000/hooks/reminder" },
+        "payload": { "msg": "Test reminder" }
+    }
+    r = httpx.post(
+        f"{URNS}/reminders",
+        headers={"X-App-Key": API_KEY},
+        json=body
+    )
+    print(r.status_code, r.json())
+
+if __name__ == "__main__":
+    test_schedule()
+```
+
+---
+
+## 8. UML Sequence Diagram
+
+Below is the UML diagram describing the communication flow between a Client App and the URNS microservice:
+
+<p align="center">
+  <img src="./uml_sequence.png" width="700">
+  <br>
+  <em>Figure 1 — URNS Microservice Communication Flow</em>
+</p>
+
+
+```
+
+---
+
+## 9. How To Integrate URNS
+
+1. Run URNS on port **8081**.
+2. Add a webhook endpoint in your app:
+   - Example: `POST /hooks/reminder`
+3. Use `POST /reminders` to schedule callbacks.
+4. Always send header:
+
+   ```http
+   X-App-Key: dev-key
+   ```
+
+5. Use GET/DELETE endpoints to manage reminders.
+
+---
+
+## 10. Notes
+
+- URNS stores reminders **in-memory only**.
+- URNS retries failed webhooks (for time-based reminders).
+- All clients must follow the communication contract exactly.
+
+---
+
+**End of README**
