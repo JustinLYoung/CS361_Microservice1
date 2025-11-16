@@ -300,7 +300,7 @@ if __name__ == "__main__":
 Below is the UML diagram describing the communication flow between a Client App and the URNS microservice:
 
 <p align="center">
-  <img src="./uml_diagram.png" width="700">
+  <img src="./UML_diagram.png" width="700">
   <br>
   <em>Figure 1 — URNS Microservice Communication Flow</em>
 </p>
