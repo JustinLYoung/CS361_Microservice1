@@ -23,7 +23,7 @@ URNS is a standalone microservice that lets any **client application** schedule 
    - **Delete all** → DELETE `/reminders`
 
 **Important:**  
-URNS stores reminders **in memory only** (no database). Restarting the process clears all reminders. This is acceptable for the class project.
+URNS stores reminders **in memory only** (no database). Restarting the process clears all reminders.
 
 ---
 
